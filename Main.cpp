@@ -4,6 +4,7 @@
 #include <string.h>
 #include <sys/types.h>
 #include <thread>
+#include <fcntl.h>
 
 #define READ_END 0
 #define WRITE_END 1
@@ -42,7 +43,7 @@ class Job {
 vector<thread> workerThreads;
 workerType workers[5];
 vector<worker> workerProcesses[5];
-fd_set readfds;
+fd_set writefds;
 int totalWorkerCount = 0;
 vector<Job> jobs;
 atomic<bool> stopThread(false);
@@ -81,11 +82,9 @@ void WorkerProcess(int worker_type, int worker_id, int readfd,int writefd) {
 		
 		if (bytesRead == -1) {
 			perror("Read failed");
-			cout<<"read failed "<<worker_type<<endl;
-			return;
+			// return;
 		} else if (bytesRead == 0) {
-			cout<<worker_type<<" tht err"<<endl;
-			std::cerr << "Pipe closed, no data received\n";
+			std::cerr << "Pipe closed.\n";
 		} else {
 			message[bytesRead] = '\0';  // Null-terminate string
 		}
@@ -110,43 +109,50 @@ void WorkerProcess(int worker_type, int worker_id, int readfd,int writefd) {
 
 void available_worker() {
 	
-		FD_ZERO(&readfds);
+		FD_ZERO(&writefds);
 		
 		int max_fd = -1;
 		
 		for(auto workerProcess : workerProcesses) {
 			for(auto w : workerProcess) {
-				int fd = w.readfd[READ_END];
-				FD_SET(fd, &readfds);
+				int fd = w.readfd[WRITE_END];
+                if (fd == -1) continue; // Skip if the file descriptor is invalid
+                if (fcntl(fd, F_GETFD) == -1) {
+                    continue;  // Skip closed FDs
+                }
+				FD_SET(fd, &writefds);
 			    if (fd > max_fd) max_fd = fd; // Track the max FD value
 			}
 		}
 		
-		struct timeval timeout;
-		timeout.tv_sec = 1;   // 1 seconds timeout
-		timeout.tv_usec = 0; 
-		int ret = select(max_fd + 1, &readfds, NULL, NULL, &timeout);
+		
+
+        int ret = select(max_fd + 1, NULL, &writefds, NULL, NULL);
 
 		
-	
-
+        if (ret < 0) {
+            std::cerr << "select() failed: " << strerror(errno) << std::endl;
+        }
 }
+
 
 void sendJobToWorker(int ind) {
     ////check for available workers.......
         int worker_id = -1;
 		Job job = jobs[ind];
 		
-		available_worker();
+       
+        available_worker();
         while(worker_id == -1) {
-			
+            
             for(int  w = 0 ;w < workers[job.job_type - 1].worker_count ;w++) {
-                if(FD_ISSET(workerProcesses[job.job_type - 1][w].readfd[READ_END], &readfds)) {
+                if(FD_ISSET(workerProcesses[job.job_type - 1][w].readfd[WRITE_END], &writefds)) {
                     worker_id = w;
                     break;
                 }
             }
         } 
+         
 		
 		int job_type = job.job_type;
         int job_duration = job.job_duration;
@@ -171,13 +177,13 @@ void sendJobToWorker(int ind) {
 
 void MainProcess() {
 	
-	
 	for(int wtype = 0; wtype < 5; wtype++) {
         for (int j = 0; j < workers[wtype].worker_count; j++) {
             close(workerProcesses[wtype][j].readfd[READ_END]);
             close(workerProcesses[wtype][j].writefd[WRITE_END]); 
         }
     }
+	
 	
     char line[100];
     while(fgets(line, sizeof(line), stdin) != NULL) {
@@ -203,6 +209,7 @@ void MainProcess() {
             workerThread.join();
         }
     }
+    
     for(int wtype = 0; wtype < 5; wtype++) {
         for (int j = 0; j < workers[wtype].worker_count; j++) {
             
