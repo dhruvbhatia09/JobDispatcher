@@ -40,13 +40,21 @@ class Job {
 		int job_duration;
 };
 
-vector<thread> workerThreads;
-workerType workers[5];
-vector<worker> workerProcesses[5];
+
+workerType workers[5]; // to store worker types and their counts 
+vector<worker> workerProcesses[5]; // to store worker processes
 fd_set writefds;
+fd_set readfds;
 int totalWorkerCount = 0;
-vector<Job> jobs;
-atomic<bool> stopThread(false);
+vector<Job> jobs; // to store jobs info
+int completed_jobs = 0;
+std::atomic<bool> stop_thread(false);
+// void (*sigHandler)(int);	
+void (*oldhandler)(int);
+
+int writefd_close;
+int readfd_close;
+
 
 
 
@@ -72,9 +80,21 @@ void CollectWorkerData(){
     
 }
 
+void sigHandler(int signum) 
+{
+    close(readfd_close);
+    close(writefd_close);
+    
+    signal(SIGALRM, oldhandler);
+    
+    kill(getpid(), SIGTERM); // Terminate the process
+}
+
 
 void WorkerProcess(int worker_type, int worker_id, int readfd,int writefd) {
-	while(1) {
+	readfd_close = readfd;
+    writefd_close = writefd;
+    while(1) {
 		char message[128];
 		
 		
@@ -82,7 +102,6 @@ void WorkerProcess(int worker_type, int worker_id, int readfd,int writefd) {
 		
 		if (bytesRead == -1) {
 			perror("Read failed");
-			// return;
 		} else if (bytesRead == 0) {
 			std::cerr << "Pipe closed.\n";
 		} else {
@@ -92,43 +111,60 @@ void WorkerProcess(int worker_type, int worker_id, int readfd,int writefd) {
 		
 
 		int job_duration = atoi(message);
+        if(job_duration == -1) {
+            return;
+        }
+		
+        
+        
 		sleep(job_duration);
 		
 		
 		char response[10] = "1";
 		
-		write(writefd,response,strlen(response));
+		write(writefd,response,strlen(response)+1);
 		
 	}
 	
-	close(readfd);
-    close(writefd);
+	
     
 }
 
 
 void available_worker() {
 	
-		FD_ZERO(&writefds);
+    
+		
+        FD_ZERO(&readfds);
+        
+
 		
 		int max_fd = -1;
 		
 		for(auto workerProcess : workerProcesses) {
 			for(auto w : workerProcess) {
-				int fd = w.readfd[WRITE_END];
-                if (fd == -1) continue; // Skip if the file descriptor is invalid
-                if (fcntl(fd, F_GETFD) == -1) {
+                
+			
+                int rfd = w.writefd[READ_END];
+                
+                if (rfd == -1) continue; // Skip if the file descriptor is invalid
+                if (fcntl(rfd, F_GETFD) == -1) {
                     continue;  // Skip closed FDs
                 }
-				FD_SET(fd, &writefds);
-			    if (fd > max_fd) max_fd = fd; // Track the max FD value
+				FD_SET(rfd, &readfds);
+			    if (rfd > max_fd) max_fd = rfd; // Track the max FD value
 			}
 		}
 		
+     
 		
 
-        int ret = select(max_fd + 1, NULL, &writefds, NULL, NULL);
+        struct timeval timeout;
+        timeout.tv_sec = 1;        // 1 second
+        timeout.tv_usec = 100000;  // 100 ms = 0.1 second
 
+        int ret = select(max_fd + 1, &readfds, NULL, NULL, &timeout);
+        
 		
         if (ret < 0) {
             std::cerr << "select() failed: " << strerror(errno) << std::endl;
@@ -142,9 +178,8 @@ void sendJobToWorker(int ind) {
 		Job job = jobs[ind];
 		
        
-        available_worker();
+        
         while(worker_id == -1) {
-            
             for(int  w = 0 ;w < workers[job.job_type - 1].worker_count ;w++) {
                 if(FD_ISSET(workerProcesses[job.job_type - 1][w].readfd[WRITE_END], &writefds)) {
                     worker_id = w;
@@ -152,7 +187,7 @@ void sendJobToWorker(int ind) {
                 }
             }
         } 
-         
+      
 		
 		int job_type = job.job_type;
         int job_duration = job.job_duration;
@@ -161,18 +196,64 @@ void sendJobToWorker(int ind) {
 		
 		int readfd = workerProcesses[job_type - 1][worker_id].writefd[READ_END];
 		int writefd = workerProcesses[job_type - 1][worker_id].readfd[WRITE_END];
-		write(writefd,message,strlen(message));
+		write(writefd,message,strlen(message)+1);
+
+
+        FD_CLR(writefd, &writefds); // so it’s not picked again before completion
+      		
 		
-		char response[10];
+}
+
+void receive() {
+    
+    
+
+    while(1) {
+        int worker_id = -1;
+        int job_type = -1;
+        int readfd = -1;
+        int wfd = -1;
+    
+
+        available_worker();
+    
+
+        for(int wtype = 0; wtype < 5; wtype++) {
+            for(int  w = 0 ;w < workers[wtype].worker_count ;w++) {
+                if(FD_ISSET(workerProcesses[wtype][w].writefd[READ_END], &readfds)) {
+                    worker_id = w;
+                    job_type = wtype + 1;
+                    readfd = workerProcesses[wtype][w].writefd[READ_END];
+                    wfd = workerProcesses[wtype][w].readfd[WRITE_END];
+   
+
+                    break;
+                }
+            }
+        }
+
+        if(worker_id == -1 && stop_thread && completed_jobs == jobs.size()) {
+            break; // Exit the loop if the thread is signaled to stop
+        }else if(worker_id == -1) {
+            continue;
+        }
+    
+
+        char response[10];
 		
 		ssize_t bytesRead = read(readfd, response, sizeof(response) - 1);
 		if(strcmp(response,"1") == 0){
+            FD_SET(wfd, &writefds);
 			cout<<endl;
-			cout<<"MAIN: job completed by: "<<job_type<<" and "<<worker_id + 1<<"th worker"<<endl;
+            completed_jobs++;
+			cout<<"MAIN: job completed by: "<<job_type<<"."<<worker_id + 1<<"th worker"<<endl;
 		} else {
 			cout<<endl;
-			cout<<"MAIN: job failed by: "<<job_type<<" and "<<worker_id + 1<<"th worker"<<endl;
+			cout<<"MAIN: job failed by: "<<job_type<<"."<<worker_id + 1<<"th worker"<<endl;
 		}
+    
+
+    }
 }
 
 void MainProcess() {
@@ -183,7 +264,16 @@ void MainProcess() {
             close(workerProcesses[wtype][j].writefd[WRITE_END]); 
         }
     }
-	
+
+    thread receiveMessageThread(receive);
+
+    // initailly all workers are available
+    for(int wtype = 0; wtype < 5; wtype++) {
+        for (int j = 0; j < workers[wtype].worker_count; j++) {
+            FD_SET(workerProcesses[wtype][j].readfd[WRITE_END], &writefds);
+        }
+    }
+    
 	
     char line[100];
     while(fgets(line, sizeof(line), stdin) != NULL) {
@@ -196,20 +286,32 @@ void MainProcess() {
 		job.job_duration = job_duration;
 		jobs.push_back(job);
 		int ind = jobs.size() - 1;
-		thread workerInstance(sendJobToWorker,ind);
-        workerThreads.push_back(move(workerInstance));
+        
+        sendJobToWorker(ind);
+		
 	}
 
 
-    
+   
 		
     
-    for(auto &workerThread : workerThreads) {
-        if(workerThread.joinable()) {
-            workerThread.join();
+  
+
+    stop_thread = true; // Signal the thread to stop
+    if(receiveMessageThread.joinable()) {
+    
+        receiveMessageThread.join();
+    }
+    
+    // terminating workers
+    for(int wtype = 0; wtype < 5; wtype++) {
+        for(int  w = 0 ;w < workers[wtype].worker_count ;w++) {   
+            kill(workerProcesses[wtype][w].pid, SIGTERM);
         }
     }
     
+
+    // closing sockets
     for(int wtype = 0; wtype < 5; wtype++) {
         for (int j = 0; j < workers[wtype].worker_count; j++) {
             
@@ -217,11 +319,12 @@ void MainProcess() {
             close(workerProcesses[wtype][j].writefd[READ_END]);
         }
     }
-		
+	
     
 }
 
 void startWorkerProcess() {
+    oldhandler = signal( SIGTERM, sigHandler );	/* Install signal handler */
 
     for(int wtype = 0; wtype < 5; wtype++) {
         if(workers[wtype].worker_count <= 0) continue;
