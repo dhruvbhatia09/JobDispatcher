@@ -32,7 +32,8 @@ This project is a screening assignment for the Software Development Engineer - S
 
 ## Input Format
 1. **Worker Configuration** (First 5 lines):
-   worker_type should be from 1 to 5.
+
+    `worker_type` and `job_type` should range from 1 to 5.
    ```
    <worker_type> <worker_count>
    ```
