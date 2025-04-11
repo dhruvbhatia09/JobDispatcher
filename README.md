@@ -29,6 +29,10 @@ This project is a screening assignment for the Software Development Engineer - S
    ./dispatcher < input.txt
    ```
    - The input file should contain worker configurations followed by job assignments.
+#### Quick way:
+```sh
+make run
+```
 
 ## Input Format
 1. **Worker Configuration** (First 5 lines):
