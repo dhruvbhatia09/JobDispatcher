@@ -246,7 +246,7 @@ void receive() {
             FD_SET(wfd, &writefds);
 			cout<<endl;
             completed_jobs++;
-			cout<<"MAIN: job completed by: "<<job_type<<"."<<worker_id + 1<<"th worker"<<endl;
+			cout<<"MAIN: "<<completed_jobs<<"th job completed by: "<<job_type<<"."<<worker_id + 1<<"th worker"<<endl;
 		} else {
 			cout<<endl;
 			cout<<"MAIN: job failed by: "<<job_type<<"."<<worker_id + 1<<"th worker"<<endl;
