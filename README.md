@@ -5,6 +5,7 @@ This project is a screening assignment for the Software Development Engineer - S
 
 ## Features
 - **Worker Process Creation**: Spawns worker processes to handle specific job types.
+- It will help users to grow
 - **Inter-Process Communication**: Uses pipes for communication between the dispatcher and worker processes.
 - **Job Scheduling**: Assigns jobs dynamically based on worker availability.
 - **Concurrency Management**: Uses `select` to handle multiple worker processes efficiently.
